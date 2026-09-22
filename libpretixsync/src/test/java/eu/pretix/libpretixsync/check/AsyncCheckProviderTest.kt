@@ -28,6 +28,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Ignore
 
 class AsyncCheckProviderTest : BaseDatabaseTest() {
+    private val mediumRequiringSignedSecret = "DMdHmFHt3jd7zwPz8ag9UtICm7d0w1URu4Vxw2GSWLRkw0Q6lyLFG8+6mz0956lYb0zgPu8iCpBO8rQbfhj7g7AIsARMBlERF10QG5UCKAEAPAQA"
+
     private var configStore: FakeConfigStore? = null
     private var fakeApi: FakePretixApi? = null
     private var p: AsyncCheckProvider? = null
@@ -1156,6 +1158,69 @@ class AsyncCheckProviderTest : BaseDatabaseTest() {
         val r = p!!.check(mapOf("demo" to 1L), "EFAKEyTSylQOgeKjuMPiTDxi5HXPuTVsx1qCli3IL0143gj0EZXOB9iQInANxRFJTt4Pf9nXnHdB91Qk/RN0L5AIBABSxw2TKFnSUNUCKAEAPAQA")
         assertEquals(TicketCheckProvider.CheckResult.Type.INVALID, r.type)
         assertEquals(db.queuedCheckInQueries.count().executeAsOne(), 0L)
+    }
+
+    @Test
+    fun testSignedMediumRequiredAndEnforced() {
+        syncMediumRequiringItem(reusableMediaUsageEnforced = true)
+
+        val r = p!!.check(mapOf("demo" to 1L), mediumRequiringSignedSecret)
+        assertEquals(TicketCheckProvider.CheckResult.Type.EXCHANGE_REQUIRED_OFFLINE, r.type)
+        assertEquals(false, r.isCheckinAllowed)
+        assertEquals("This ticket needs to be exchanged, but this isn't possible while offline", r.reasonExplanation)
+        assertEquals(db.queuedCheckInQueries.count().executeAsOne(), 0L)
+
+        assertEquals(1, db.queuedCallQueries.count().executeAsOne())
+        val queuedCall: QueuedCall = db.queuedCallQueries.selectAll().executeAsList().first()
+        val data = JSONObject(queuedCall.body)
+        assertEquals("exchange", data.getString("error_reason"))
+        assertEquals("entry", data.getString("type"))
+        assertEquals(44L, data.getLong("item"))
+        assertTrue(queuedCall.url!!.endsWith("/checkinlists/1/failed_checkins/"))
+    }
+
+    @Test
+    fun testSignedMediumRequiredAndEnforcedOnExit() {
+        syncMediumRequiringItem(reusableMediaUsageEnforced = true)
+
+        val r = p!!.check(mapOf("demo" to 1L), mediumRequiringSignedSecret, "barcode", null, false, false, TicketCheckProvider.CheckInType.EXIT)
+        assertEquals(TicketCheckProvider.CheckResult.Type.EXCHANGE_REQUIRED_OFFLINE, r.type)
+        assertEquals(false, r.isCheckinAllowed)
+        assertEquals("This ticket needs to be exchanged, but this isn't possible while offline", r.reasonExplanation)
+        assertEquals(db.queuedCheckInQueries.count().executeAsOne(), 0L)
+
+        assertEquals(1, db.queuedCallQueries.count().executeAsOne())
+        val queuedCall: QueuedCall = db.queuedCallQueries.selectAll().executeAsList().first()
+        val data = JSONObject(queuedCall.body)
+        assertEquals("exchange", data.getString("error_reason"))
+        assertEquals("exit", data.getString("type"))
+    }
+
+    @Test
+    fun testSignedMediumRequiredButNotEnforced() {
+        syncMediumRequiringItem(reusableMediaUsageEnforced = false)
+
+        val r = p!!.check(mapOf("demo" to 1L), mediumRequiringSignedSecret)
+        assertEquals(TicketCheckProvider.CheckResult.Type.VALID, r.type)
+        assertEquals("NFC ticket", r.ticket)
+        assertEquals(db.queuedCheckInQueries.count().executeAsOne(), 1L)
+        assertEquals(0, db.queuedCallQueries.count().executeAsOne())
+    }
+
+    private fun syncMediumRequiringItem(reusableMediaUsageEnforced: Boolean) {
+        ItemSyncAdapter(db, FakeFileStorage(), "demo", fakeApi!!, "", null).standaloneRefreshFromJSON(jsonResource("items/item4.json"))
+        db.settingsQueries.insert(
+            address = "",
+            city = "",
+            country = "",
+            json_data = JSONObject().put("reusable_media_usage_enforced", reusableMediaUsageEnforced).toString(),
+            name = "",
+            pretixpos_additional_receipt_text = "",
+            slug = "demo",
+            tax_id = "",
+            vat_id = "",
+            zipcode = "",
+        )
     }
 
     @Test

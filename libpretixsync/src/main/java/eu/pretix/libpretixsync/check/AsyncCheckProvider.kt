@@ -465,6 +465,28 @@ class AsyncCheckProvider(private val config: ConfigStore, private val db: SyncDa
         res.isRequireAttention = require_attention || (variation?.isCheckin_attention == true)
         res.checkinTexts = listOfNotNull(variation?.checkin_text?.trim(), item.checkInText?.trim()).filterNot { it.isBlank() }.filterNot { it.isBlank() || it == "null" }
 
+        val settings = db.settingsQueries.selectBySlug(eventSlug).executeAsOneOrNull()?.toModel()
+        val reusableMediaUsageEnforced = (settings?.json?.optBoolean("reusable_media_usage_enforced", false) == true)
+
+        if (item.mediaPolicy != MediaPolicy.NONE && item.mediaType != ReusableMediaType.NONE && reusableMediaUsageEnforced) {
+            res.type = TicketCheckProvider.CheckResult.Type.EXCHANGE_REQUIRED_OFFLINE
+            res.isCheckinAllowed = false
+            res.reasonExplanation = "This ticket needs to be exchanged, but this isn't possible while offline"
+            storeFailedCheckin(
+                eventSlug,
+                listId,
+                "exchange",
+                ticketid,
+                source_type,
+                type,
+                item = item.serverId,
+                variation = decoded.variation,
+                subevent = decoded.subevent,
+                nonce = nonce
+            )
+            return res
+        }
+
         val queuedCheckIns = db.queuedCheckInQueries.selectBySecret(ticketid)
             .executeAsList()
             .filter { it.checkinListId == listId && it.annulled == null }
