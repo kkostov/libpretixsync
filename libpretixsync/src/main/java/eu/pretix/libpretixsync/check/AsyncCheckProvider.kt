@@ -824,9 +824,20 @@ class AsyncCheckProvider(private val config: ConfigStore, private val db: SyncDa
         val message: String? = null
     )
 
+    private fun isProductOnList(list: CheckInList, position: OrderPositionModel): Boolean {
+        if (list.allItems) {
+            return true
+        }
+
+        return db.checkInListQueries.selectItemIdsForList(list.id)
+            .executeAsList()
+            .any { it.id == position.itemId }
+    }
+
     private fun filterPositions(eventsAndCheckinLists: Map<String, Long>, positions: List<OrderPositionModel>): Pair<List<OrderPositionModel>, List<PositionFilteringError>> {
         var results = mutableListOf<OrderPositionModel>()
         val errors = mutableListOf<PositionFilteringError>()
+        val listsByPositionId = mutableMapOf<Long, CheckInList>()
         positions.forEach { position ->
             val order = db.orderQueries.selectById(position.orderId).executeAsOne().toModel()
 
@@ -864,25 +875,7 @@ class AsyncCheckProvider(private val config: ConfigStore, private val db: SyncDa
                 candidates.addAll(orderPositions.filter {
                     it.addonToServerId == position.serverId
                 })
-                // server side: 3b.
-                val filteredCandidates = if (!list.allItems) {
-                    val items = db.checkInListQueries.selectItemIdsForList(list.id)
-                        .executeAsList()
-                        .map {
-                            // Not-null assertion needed for SQLite
-                            it.id!!
-                        }
-                        .toHashSet()
-                    candidates.filter { candidate ->
-                        val candidateItem =
-                            db.itemQueries.selectById(candidate.itemId).executeAsOne()
-                        items.contains(candidateItem.id)
-                    }
-                } else {
-                    // This is a useless configuration that the backend won't allow, but we'll still handle
-                    // it here for completeness
-                    candidates
-                }
+                val filteredCandidates = candidates.filter { isProductOnList(list, it) }
 
                 if (filteredCandidates.isEmpty()) {
                     errors.add(PositionFilteringError(position, eventSlug, list, TicketCheckProvider.CheckResult.Type.PRODUCT))
@@ -896,10 +889,17 @@ class AsyncCheckProvider(private val config: ConfigStore, private val db: SyncDa
             }
 
             results.addAll(resultingPositions)
+            resultingPositions.forEach { listsByPositionId[it.id] = list }
+        }
+
+        val candidatePositions = results.toList()
+
+        // server side: 3b.
+        if (results.size > 1) {
+            results = results.filter { isProductOnList(listsByPositionId.getValue(it.id), it) }.toMutableList()
         }
 
         // server side: 3c.
-        val candidatePositions = results.toList()
         if (results.size > 1) {
             val nowOdt = javaTimeNow()
             results = results.filter { op ->
@@ -911,15 +911,16 @@ class AsyncCheckProvider(private val config: ConfigStore, private val db: SyncDa
         // We try to improve  the error message by selecting the product that will "work next" or - if none matches - "worked last".
         if (results.isEmpty()) {
             val nowOdt = javaTimeNow()
-            val nearestCandidate = candidatePositions
+            val fallbackCandidate = candidatePositions
                 .filter { it.validFrom != null && it.validFrom > nowOdt }
                 .minByOrNull { it.validFrom!! }
                 ?: candidatePositions
                     .filter { it.validUntil != null && it.validUntil < nowOdt }
                     .maxByOrNull { it.validUntil!! }
+                ?: candidatePositions.firstOrNull()
 
-            if (nearestCandidate != null) {
-                results = mutableListOf(nearestCandidate)
+            if (fallbackCandidate != null) {
+                results = mutableListOf(fallbackCandidate)
             }
         }
 
