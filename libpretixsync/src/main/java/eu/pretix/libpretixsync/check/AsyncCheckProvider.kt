@@ -899,6 +899,7 @@ class AsyncCheckProvider(private val config: ConfigStore, private val db: SyncDa
         }
 
         // server side: 3c.
+        val candidatePositions = results.toList()
         if (results.size > 1) {
             val nowOdt = javaTimeNow()
             results = results.filter { op ->
@@ -910,50 +911,15 @@ class AsyncCheckProvider(private val config: ConfigStore, private val db: SyncDa
         // We try to improve  the error message by selecting the product that will "work next" or - if none matches - "worked last".
         if (results.isEmpty()) {
             val nowOdt = javaTimeNow()
-            var nearestCandidate: OrderPositionModel? = null
-
-            positions.forEach {
-                if (it.validFrom != null &&
-                    (it.validFrom > nowOdt ||
-                    (nearestCandidate != null && it.validFrom < nearestCandidate.validFrom))) {
-                    nearestCandidate = it
-                }
-            }
-
-            if (nearestCandidate == null) {
-                positions.forEach {
-                    if (it.validUntil != null &&
-                        (it.validUntil < nowOdt ||
-                                (nearestCandidate != null && it.validUntil > nearestCandidate.validUntil))) {
-                        nearestCandidate = it
-                    }
-                }
-            }
+            val nearestCandidate = candidatePositions
+                .filter { it.validFrom != null && it.validFrom > nowOdt }
+                .minByOrNull { it.validFrom!! }
+                ?: candidatePositions
+                    .filter { it.validUntil != null && it.validUntil < nowOdt }
+                    .maxByOrNull { it.validUntil!! }
 
             if (nearestCandidate != null) {
-                val order = db.orderQueries.selectById(nearestCandidate.orderId).executeAsOne().toModel()
-
-                val eventSlug = order.eventSlug
-                val event = db.eventQueries.selectBySlug(eventSlug).executeAsOneOrNull()?.toModel()
-                if (event == null) {
-                    return Pair(listOf(), listOf(PositionFilteringError(nearestCandidate, eventSlug, null, TicketCheckProvider.CheckResult.Type.ERROR, "Event not found")))
-                }
-
-                val listId = eventsAndCheckinLists[eventSlug]
-                if (listId == null) {
-                    return Pair(listOf(), listOf(PositionFilteringError(nearestCandidate, eventSlug, null, TicketCheckProvider.CheckResult.Type.ERROR, "No check-in list selected")))
-                }
-
-                val list = db.checkInListQueries.selectByServerIdAndEventSlug(
-                    server_id = listId,
-                    event_slug = eventSlug,
-                ).executeAsOneOrNull()?.toModel()
-
-                if (list == null) {
-                    return Pair(listOf(), listOf(PositionFilteringError(nearestCandidate, eventSlug, null, TicketCheckProvider.CheckResult.Type.ERROR, "Check-in list not found")))
-                }
-
-                return Pair(listOf(), listOf(PositionFilteringError(nearestCandidate, eventSlug, list, TicketCheckProvider.CheckResult.Type.INVALID_TIME)))
+                results = mutableListOf(nearestCandidate)
             }
         }
 
@@ -1001,20 +967,6 @@ class AsyncCheckProvider(private val config: ConfigStore, private val db: SyncDa
                             firstError.eventSlug,
                             firstError.list.serverId,
                             "ambiguous",
-                            secret,
-                            source_type,
-                            type,
-                            position = firstError.position.serverId,
-                            item = item.serverId,
-                            variation = firstError.position.variationServerId,
-                            subevent = firstError.position.subEventServerId,
-                            nonce = nonce
-                        )
-                    TicketCheckProvider.CheckResult.Type.INVALID_TIME ->
-                        storeFailedCheckin(
-                            firstError.eventSlug,
-                            firstError.list.serverId,
-                            "invalid_time",
                             secret,
                             source_type,
                             type,
@@ -1201,7 +1153,7 @@ class AsyncCheckProvider(private val config: ConfigStore, private val db: SyncDa
                     eventSlug,
                     list.serverId,
                     "invalid_time",
-                    position.secret!!,
+                    secret,
                     source_type,
                     type,
                     position = position.serverId,
@@ -1220,7 +1172,7 @@ class AsyncCheckProvider(private val config: ConfigStore, private val db: SyncDa
                     eventSlug,
                     list.serverId,
                     "invalid_time",
-                    position.secret!!,
+                    secret,
                     source_type,
                     type,
                     position = position.serverId,

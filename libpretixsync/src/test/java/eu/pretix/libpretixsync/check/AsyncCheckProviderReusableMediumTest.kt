@@ -53,6 +53,8 @@ class AsyncCheckProviderReusableMediumTest : BaseDatabaseTest() {
         rmsa.standaloneRefreshFromJSON(jsonResource("reusablemedia/mtrmt-medium5.json"))
         rmsa.standaloneRefreshFromJSON(jsonResource("reusablemedia/mtrmt-medium6.json"))
         rmsa.standaloneRefreshFromJSON(jsonResource("reusablemedia/mtrmt-medium7.json"))
+        rmsa.standaloneRefreshFromJSON(jsonResource("reusablemedia/mtrmt-medium8.json"))
+        rmsa.standaloneRefreshFromJSON(jsonResource("reusablemedia/mtrmt-medium9.json"))
     }
 
     @Test
@@ -140,6 +142,54 @@ class AsyncCheckProviderReusableMediumTest : BaseDatabaseTest() {
         assertEquals("W0JKM-7", r.orderCodeAndPositionId())
     }
 
+    @Test
+    fun testTwoTicketsGapExitScanIsValid() {
+        p!!.setNow(ISODateTimeFormat.dateTime().parseDateTime("2026-08-01T00:00:01.000Z"))
+        val r = p!!.check(mapOf("event1" to 35L), "7777", "barcode", null, false, false, TicketCheckProvider.CheckInType.EXIT)
+        assertEquals(TicketCheckProvider.CheckResult.Type.VALID, r.type)
+        assertEquals("W0JKM-7", r.orderCodeAndPositionId())
+        assertEquals(TicketCheckProvider.CheckInType.EXIT, r.scanType)
+    }
+
+    @Test
+    fun testSinglePositionOutOfWindowExitScanIsValid() {
+        p!!.setNow(ISODateTimeFormat.dateTime().parseDateTime("2026-08-01T00:00:01.000Z"))
+        val r = p!!.check(mapOf("event1" to 35L), "8888", "nfc_uid", null, false, false, TicketCheckProvider.CheckInType.EXIT)
+        assertEquals(TicketCheckProvider.CheckResult.Type.VALID, r.type)
+        assertEquals("W0JKM-3", r.orderCodeAndPositionId())
+        assertEquals(TicketCheckProvider.CheckInType.EXIT, r.scanType)
+    }
+
+    @Test
+    fun testTwoTicketsGapPicksNextRegardlessOfOrder() {
+        // use the candidate that will "work next", even though a candidate from the past is stored after it
+        p!!.setNow(ISODateTimeFormat.dateTime().parseDateTime("2026-08-01T00:00:01.000Z"))
+        var r = p!!.check(mapOf("event1" to 35L), "9999")
+        assertEquals(TicketCheckProvider.CheckResult.Type.INVALID_TIME, r.type)
+        assertEquals("W0JKM-3", r.orderCodeAndPositionId())
+
+        // no candidate in the future, use the one that worked last
+        p!!.setNow(ISODateTimeFormat.dateTime().parseDateTime("2027-06-01T00:00:01.000Z"))
+        r = p!!.check(mapOf("event1" to 35L), "9999")
+        assertEquals(TicketCheckProvider.CheckResult.Type.INVALID_TIME, r.type)
+        assertEquals("W0JKM-3", r.orderCodeAndPositionId())
+    }
+
+    @Test
+    fun testInvalidTimeFailedCheckinStoresScannedIdentifier() {
+        val sourceType = "nfc_uid"
+        assertEquals(0, db.queuedCallQueries.count().executeAsOne())
+        p!!.setNow(ISODateTimeFormat.dateTime().parseDateTime("2026-08-01T00:00:01.000Z"))
+        val r = p!!.check(mapOf("event1" to 35L), "8888", sourceType)
+        assertEquals(TicketCheckProvider.CheckResult.Type.INVALID_TIME, r.type)
+
+        assertEquals(1, db.queuedCallQueries.count().executeAsOne())
+        val queuedCall : QueuedCall = db.queuedCallQueries.selectAll().executeAsList().first()
+        val data = JSONObject(queuedCall.body)
+        assertEquals("invalid_time", data.getString("error_reason"))
+        assertEquals(sourceType, data.getString("raw_source_type"))
+        assertEquals("8888", data.getString("raw_barcode"))
+    }
 
     @Test
     fun testMediumExpiredFailedCheckinSourceTypeStored() {
