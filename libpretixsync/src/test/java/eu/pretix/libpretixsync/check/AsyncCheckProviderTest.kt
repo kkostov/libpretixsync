@@ -3,6 +3,7 @@ package eu.pretix.libpretixsync.check
 import eu.pretix.libpretixsync.db.Answer
 import eu.pretix.libpretixsync.db.BaseDatabaseTest
 import eu.pretix.libpretixsync.db.NonceGenerator
+import eu.pretix.libpretixsync.sqldelight.QueuedCall
 import eu.pretix.libpretixsync.sync.CheckInListSyncAdapter
 import eu.pretix.libpretixsync.sync.EventSyncAdapter
 import eu.pretix.libpretixsync.sync.ItemSyncAdapter
@@ -23,6 +24,7 @@ import java.util.ArrayList
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Ignore
 
 class AsyncCheckProviderTest : BaseDatabaseTest() {
@@ -63,10 +65,14 @@ class AsyncCheckProviderTest : BaseDatabaseTest() {
         CheckInListSyncAdapter(db, FakeFileStorage(), "demo", fakeApi!!, "", null, 0).standaloneRefreshFromJSON(
             jsonResource("checkinlists/list10.json")
         )
+        CheckInListSyncAdapter(db, FakeFileStorage(), "demo", fakeApi!!, "", null, 0).standaloneRefreshFromJSON(
+            jsonResource("checkinlists/list11.json")
+        )
         CheckInListSyncAdapter(db, FakeFileStorage(), "demo2", fakeApi!!, "", null, 0).standaloneRefreshFromJSON(
             jsonResource("checkinlists/event2-list7.json")
         )
         SubEventSyncAdapter(db, FakeFileStorage(), "demo", "14", fakeApi!!, "", null).standaloneRefreshFromJSON(jsonResource("subevents/subevent1.json"))
+        SubEventSyncAdapter(db, FakeFileStorage(), "demo", "15", fakeApi!!, "", null).standaloneRefreshFromJSON(jsonResource("subevents/subevent2.json"))
 
         val osa = OrderSyncAdapter(db, FakeFileStorage(), "demo", 0, true, false, fakeApi!!, "", null)
         osa.standaloneRefreshFromJSON(jsonResource("orders/order1.json"))
@@ -222,7 +228,26 @@ class AsyncCheckProviderTest : BaseDatabaseTest() {
         assertEquals("Regular ticket", r.ticket)
     }
 
-    // TODO: invalid subevent
+    @Test
+    fun testInvalidSubEvent() {
+        val sourceType = "nfc_uid"
+        assertEquals(0, db.queuedCallQueries.count().executeAsOne())
+
+        val r = p!!.check(mapOf("demo" to 11L), "VQwFXDZWhoXDuXBvKxWqq76kVtLlFWaY", sourceType)
+        assertEquals(TicketCheckProvider.CheckResult.Type.PRODUCT, r.type)
+        assertEquals("RR3IP-1", r.orderCodeAndPositionId())
+        assertEquals("Alexis Johnson", r.attendee_name)
+        assertEquals("Regular ticket", r.ticket)
+        assertEquals(false, r.isCheckinAllowed)
+
+        assertEquals(1, db.queuedCallQueries.count().executeAsOne())
+        val queuedCall: QueuedCall = db.queuedCallQueries.selectAll().executeAsList().first()
+        val data = JSONObject(queuedCall.body)
+        assertEquals("product", data.getString("error_reason"))
+        assertEquals(sourceType, data.getString("raw_source_type"))
+        assertEquals(14L, data.getLong("subevent"))
+        assertTrue(queuedCall.url!!.endsWith("/checkinlists/11/failed_checkins/"))
+    }
 
     @Test
     fun testSimpleRedeemed() {

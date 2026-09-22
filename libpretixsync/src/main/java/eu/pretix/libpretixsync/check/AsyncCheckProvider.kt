@@ -1214,8 +1214,8 @@ class AsyncCheckProvider(private val config: ConfigStore, private val db: SyncDa
         if (list.subEventId != null && list.subEventId > 0 && list.subEventId != position.subEventServerId) {
             storeFailedCheckin(
                 eventSlug,
-                list.subEventId,
-                "invalid",
+                list.serverId,
+                "product",
                 position.secret!!,
                 source_type,
                 type,
@@ -1225,7 +1225,9 @@ class AsyncCheckProvider(private val config: ConfigStore, private val db: SyncDa
                 subevent = position.subEventServerId,
                 nonce = nonce
             )
-            return TicketCheckProvider.CheckResult(TicketCheckProvider.CheckResult.Type.INVALID, offline = true)
+            res.type = TicketCheckProvider.CheckResult.Type.PRODUCT
+            res.isCheckinAllowed = false
+            return res
         }
 
         if (!order.hasValidStatus && !(ignore_unpaid && list.includePending)) {
